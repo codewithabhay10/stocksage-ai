@@ -1,66 +1,173 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+"use client";
+
+import { useState, useRef, useEffect } from "react";
+import Sidebar from "@/components/Sidebar";
+import Header from "@/components/Header";
+import WelcomeScreen from "@/components/WelcomeScreen";
+import ChatMessage from "@/components/ChatMessage";
+import ThinkingPanel from "@/components/ThinkingPanel";
+import MessageInput from "@/components/MessageInput";
 
 export default function Home() {
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [messages, setMessages] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [thinkingSteps, setThinkingSteps] = useState([]);
+  const chatEndRef = useRef(null);
+
+  const scrollToBottom = () => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, thinkingSteps]);
+
+  const handleSendMessage = async (text) => {
+    if (!text.trim() || isLoading) return;
+
+    // Add user message
+    const userMessage = {
+      id: Date.now(),
+      role: "user",
+      content: text,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMessage]);
+    setIsLoading(true);
+    setThinkingSteps([]);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          history: messages.map((m) => ({
+            role: m.role,
+            content: m.role === "user" ? m.content : JSON.stringify(m.data || m.content),
+          })),
+        }),
+      });
+
+      if (!response.ok) throw new Error("API request failed");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const chunk = JSON.parse(line);
+            if (chunk.type === "thinking") {
+              setThinkingSteps((prev) => [...prev, chunk.step]);
+            } else if (chunk.type === "result") {
+              const aiMessage = {
+                id: Date.now() + 1,
+                role: "assistant",
+                content: chunk.data.analysis?.overview || "",
+                data: chunk.data,
+                timestamp: new Date(),
+              };
+              setMessages((prev) => [...prev, aiMessage]);
+              setThinkingSteps([]);
+            } else if (chunk.type === "error") {
+              const errMessage = {
+                id: Date.now() + 1,
+                role: "assistant",
+                content: chunk.message || "Sorry, something went wrong. Please try again.",
+                timestamp: new Date(),
+              };
+              setMessages((prev) => [...prev, errMessage]);
+              setThinkingSteps([]);
+            }
+          } catch (e) {
+            // skip malformed JSON chunks
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Chat error:", error);
+      const errMessage = {
+        id: Date.now() + 1,
+        role: "assistant",
+        content: "Sorry, I encountered an error. Please try again.",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errMessage]);
+    } finally {
+      setIsLoading(false);
+      setThinkingSteps([]);
+    }
+  };
+
+  const handleNewChat = () => {
+    setMessages([]);
+    setThinkingSteps([]);
+    setIsLoading(false);
+  };
+
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="app-layout">
+      <Sidebar
+        isOpen={sidebarOpen}
+        onNewChat={handleNewChat}
+        messages={messages}
+      />
+
+      <div className="main-content">
+        <Header
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          hasMessages={messages.length > 0}
         />
-        <div className={styles.intro}>
-          <h1>To get started, edit the page.js file.</h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+
+        <div className="chat-area">
+          {messages.length === 0 && !isLoading ? (
+            <WelcomeScreen onSuggestionClick={handleSendMessage} />
+          ) : (
+            <div className="chat-messages">
+              {messages.map((msg) => (
+                <ChatMessage key={msg.id} message={msg} />
+              ))}
+
+              {isLoading && thinkingSteps.length > 0 && (
+                <div className="message assistant">
+                  <div className="message-avatar ai">S</div>
+                  <div className="message-content">
+                    <ThinkingPanel steps={thinkingSteps} />
+                  </div>
+                </div>
+              )}
+
+              {isLoading && thinkingSteps.length === 0 && (
+                <div className="message assistant">
+                  <div className="message-avatar ai">S</div>
+                  <div className="message-content">
+                    <div className="typing-dots">
+                      <div className="typing-dot"></div>
+                      <div className="typing-dot"></div>
+                      <div className="typing-dot"></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={chatEndRef} />
+            </div>
+          )}
         </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+
+        <MessageInput onSend={handleSendMessage} disabled={isLoading} />
+      </div>
     </div>
   );
 }
